@@ -1,0 +1,16 @@
+[package]
+name = "trillium-frontend-macros"
+version = "0.1.0"
+edition = "2024"
+description = "Internal proc-macro crate for trillium-frontend"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jbr/trillium-frontend"
+keywords = ["trillium", "frontend", "proc-macro"]
+categories = ["web-programming::http-server"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"

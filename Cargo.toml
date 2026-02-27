@@ -1,0 +1,16 @@
+[workspace]
+members = ["frontend", "macros"]
+resolver = "2"
+
+[package]
+name = "trillium-frontend-example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dev-dependencies]
+trillium-frontend = { path = "frontend" }
+trillium-smol = "0.4"
+trillium-client = "0.6"
+trillium-logger = "*"
+env_logger = "0.11.9"

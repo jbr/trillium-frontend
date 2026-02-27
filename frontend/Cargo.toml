@@ -1,0 +1,23 @@
+[package]
+name = "trillium-frontend"
+version = "0.1.0"
+edition = "2024"
+description = "Trillium handler for JS frontend projects: proxies a dev server in debug mode, embeds compiled assets in release mode"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jbr/trillium-frontend"
+readme = "../README.md"
+keywords = ["trillium", "frontend", "vite", "spa", "proxy"]
+categories = ["web-programming::http-server", "web-programming"]
+
+[dependencies]
+trillium = "0.2"
+trillium-frontend-macros = { path = "../macros" }
+fieldwork = "0.4"
+mime_guess = "2"
+mime = "0.3"
+httpdate = "1"
+log = "0.4"
+trillium-client = "0.6"
+trillium-proxy = "0.5"
+trillium-static-compiled = "0.5"
+portpicker = "0.1"
