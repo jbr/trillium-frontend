@@ -223,8 +223,8 @@ impl PkgManager {
     fn run_prefix(&self) -> &'static str {
         match self {
             PkgManager::Bun => "bun run",
-            PkgManager::Pnpm => "pnpm run",
-            PkgManager::Yarn => "yarn run",
+            PkgManager::Pnpm => "pnpm exec",
+            PkgManager::Yarn => "yarn exec",
             PkgManager::Npm => "npx",
         }
     }

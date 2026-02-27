@@ -64,8 +64,8 @@
 //! | Lock file | Package manager | Run prefix |
 //! |-----------|----------------|------------|
 //! | `bun.lockb` / `bun.lock` | Bun | `bun run` |
-//! | `pnpm-lock.yaml` | pnpm | `pnpm run` |
-//! | `yarn.lock` | Yarn | `yarn run` |
+//! | `pnpm-lock.yaml` | pnpm | `pnpm exec` |
+//! | `yarn.lock` | Yarn | `yarn exec` |
 //! | `package-lock.json` | npm | `npx` |
 //!
 //! **Framework** (detected by config file):
