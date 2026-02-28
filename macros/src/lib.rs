@@ -112,9 +112,7 @@ fn emit_prebuilt(
         );
     }
 
-    let dist_str = dist_dir
-        .to_str()
-        .expect("dist path is not valid UTF-8");
+    let dist_str = dist_dir.to_str().expect("dist path is not valid UTF-8");
 
     let index_html = dist_dir.join("index.html");
     let spa_fallback_tokens = if index_html.exists() {
@@ -326,9 +324,7 @@ fn install_if_needed(project_path: &Path, detection: &Detection) {
         .arg(install_command)
         .current_dir(project_path)
         .status()
-        .unwrap_or_else(|e| {
-            panic!("trillium-frontend: failed to run `{install_command}`: {e}")
-        });
+        .unwrap_or_else(|e| panic!("trillium-frontend: failed to run `{install_command}`: {e}"));
 
     if !status.success() {
         panic!("trillium-frontend: `{install_command}` failed with {status}");
