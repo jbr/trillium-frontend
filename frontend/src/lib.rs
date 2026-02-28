@@ -1,17 +1,30 @@
-//! A [Trillium](https://trillium.rs) handler for serving JS frontend projects that works
-//! transparently in both development and production:
+//! A [Trillium](https://trillium.rs) handler for serving JS frontend projects with
+//! three operating modes:
 //!
-//! - **Debug mode**: auto-detects your framework and package manager, spawns the dev server on a
-//!   free port, and proxies all requests to it — including WebSocket upgrades for HMR
-//! - **Release mode**: runs the frontend build at **compile time** and embeds all dist assets
-//!   directly in the binary via [`trillium_static_compiled`]
+//! - **Build mode** (default, source available): runs the frontend build at **compile time** and
+//!   embeds all dist assets directly in the binary via [`trillium_static_compiled`]
+//! - **Prebuilt mode** (default, no source): embeds pre-built dist assets without attempting to
+//!   build — this is what happens during `cargo install` from crates.io when the published crate
+//!   includes only the dist directory
+//! - **Dev-proxy mode** (`dev-proxy` feature + source available): auto-detects your framework and
+//!   package manager, spawns the dev server on a free port, and proxies all requests to it —
+//!   including WebSocket upgrades for HMR
+//!
+//! # Mode selection
+//!
+//! The mode is determined by two factors:
+//!
+//! 1. Whether the `dev-proxy` cargo feature is enabled
+//! 2. Whether `package.json` exists in the frontend project directory (i.e., source is available)
+//!
+//! | `dev-proxy` feature | `package.json` exists | Mode |
+//! |--------------------|-----------------------|------|
+//! | enabled | yes | Dev-proxy |
+//! | enabled | no | Prebuilt (fallback) |
+//! | disabled | yes | Build |
+//! | disabled | no | Prebuilt |
 //!
 //! # Usage
-//!
-//! ```toml
-//! [dependencies]
-//! trillium-frontend = "0.1"
-//! ```
 //!
 //! ```rust,ignore
 //! use trillium_client::Client;
@@ -27,12 +40,31 @@
 //! }
 //! ```
 //!
-//! The [`frontend!`] macro expands differently based on `cfg(debug_assertions)`:
+//! The same code works in all three modes — `.with_client()` is accepted but ignored
+//! when the `dev-proxy` feature is not enabled.
 //!
-//! - **Debug**: returns a [`FrontendHandler`] that will spawn your dev server and proxy to it on
-//!   [`Handler::init`](trillium::Handler::init)
-//! - **Release**: runs your build command at compile time and returns a [`FrontendHandler`] with
-//!   the compiled assets embedded
+//! # Enabling dev-proxy mode
+//!
+//! Pass the feature flag when you want live-reloading during development:
+//!
+//! ```sh
+//! # Development: live-reloading proxy
+//! cargo run --features trillium-frontend/dev-proxy
+//!
+//! # Production: build and embed assets at compile time
+//! cargo build --release
+//! ```
+//!
+//! You can also define a feature in your own crate that forwards it, for brevity:
+//!
+//! ```toml
+//! [features]
+//! dev-proxy = ["trillium-frontend/dev-proxy"]
+//! ```
+//!
+//! ```sh
+//! cargo run --features dev-proxy
+//! ```
 //!
 //! # Macro syntax
 //!
@@ -56,8 +88,8 @@
 //!
 //! # Auto-detection
 //!
-//! In debug mode (and for release builds without explicit `build`/`dist` arguments),
-//! `trillium-frontend` inspects the project directory for known config and lock files.
+//! When source is available (`package.json` exists), `trillium-frontend` inspects the project
+//! directory for known config and lock files to determine the build and dev commands.
 //!
 //! **Package manager** (detected by lock file, in priority order):
 //!
@@ -76,31 +108,51 @@
 //! | `webpack.config.{js,ts,mjs}` | Webpack | `webpack serve` | `webpack build` | `dist` |
 //! | `next.config.{js,ts,mjs}` | Next.js | `next dev` | `next build` | `.next` |
 //!
-//! # Builder API
+//! # Publishing for `cargo install`
 //!
-//! [`FrontendHandler`] is returned by the [`frontend!`] macro and offers these builder methods:
+//! To support `cargo install` without requiring JS tooling on the user's machine:
 //!
-//! | Method | Description |
-//! |--------|-------------|
-//! | `.with_client(Client)` | **Required in dev mode.** Provide your runtime's HTTP connector for the proxy. |
-//! | `.with_index_file("index.html")` | Enable SPA fallback: serve this file for any unmatched path. |
-//! | `.with_dev_command("npm run dev -- --port $PORT")` | Override the auto-detected dev command. When set, you are responsible for port handling — `$PORT` is exported as an env var. |
-//! | `.with_dev_port(3000)` | Pin the dev server to a specific port instead of picking a free one automatically. |
+//! 1. Build your frontend assets (e.g., `cd client && npm run build`)
+//! 2. Include the dist directory in your published crate, but **exclude** `package.json`
+//!
+//! The absence of `package.json` tells `trillium-frontend` to use the pre-built assets
+//! as-is without attempting to run a build command.
+//!
+//! ```toml
+//! [package]
+//! include = [
+//!     "src/",
+//!     "client/dist/",   # pre-built assets to embed
+//!     # Do NOT include client/package.json — its absence triggers prebuilt mode
+//! ]
+//! ```
+//!
+//! Then publish with:
+//!
+//! ```sh
+//! cargo build --release  # triggers the frontend build via the proc macro
+//! cargo publish
+//! ```
 
 #![forbid(unsafe_code)]
 
 use fieldwork::Fieldwork;
+use std::borrow::Cow;
+use trillium::{Conn, Handler, Info, async_trait};
+use trillium_client::Client;
+use trillium_static_compiled::StaticCompiledHandler;
+
+#[cfg(feature = "dev-proxy")]
 use std::{
-    borrow::Cow,
     io::ErrorKind,
     process::{Child, Command},
     sync::Mutex,
     time::Duration,
 };
-use trillium::{Conn, Error, Handler, Info, Method, Upgrade, async_trait};
-use trillium_client::Client;
+#[cfg(feature = "dev-proxy")]
+use trillium::{Error, Method, Upgrade};
+#[cfg(feature = "dev-proxy")]
 use trillium_proxy::{Proxy, Url};
-use trillium_static_compiled::StaticCompiledHandler;
 
 #[derive(Fieldwork)]
 #[fieldwork(opt_in, with, into, option_set_some)]
@@ -111,19 +163,24 @@ pub struct FrontendHandler {
     /// fallback (serves index for any path not matched by `assets`).
     spa_fallback: Option<StaticCompiledHandler>,
 
+    #[allow(dead_code)]
     project_path: Cow<'static, str>,
 
+    #[allow(dead_code)]
     detected_dev_command: Option<Cow<'static, str>>,
 
-    /// trillium HTTP client for dev-mode proxying (provide with your runtime connector)
+    /// trillium HTTP client for dev-mode proxying (ignored without `dev-proxy` feature)
+    #[allow(dead_code)]
     #[field]
     client: Option<Client>,
 
-    /// override auto-detected dev command
+    /// override auto-detected dev command (ignored without `dev-proxy` feature)
+    #[allow(dead_code)]
     #[field]
     dev_command: Option<Cow<'static, str>>,
 
-    /// override auto-detected dev port
+    /// override auto-detected dev port (ignored without `dev-proxy` feature)
+    #[allow(dead_code)]
     #[field(into = false)]
     dev_port: Option<u16>,
 
@@ -131,9 +188,10 @@ pub struct FrontendHandler {
     #[field]
     index_file: Option<&'static str>,
 
-    // Runtime state (set in init)
+    #[cfg(feature = "dev-proxy")]
     dev_process: Option<Mutex<Child>>,
 
+    #[cfg(feature = "dev-proxy")]
     proxy: Option<Proxy<Url>>,
 }
 
@@ -154,7 +212,9 @@ impl FrontendHandler {
             dev_command: None,
             dev_port: None,
             index_file: None,
+            #[cfg(feature = "dev-proxy")]
             dev_process: None,
+            #[cfg(feature = "dev-proxy")]
             proxy: None,
         }
     }
@@ -173,6 +233,7 @@ impl Handler for FrontendHandler {
             return conn;
         }
 
+        #[cfg(feature = "dev-proxy")]
         if let Some(proxy) = &self.proxy {
             return proxy.run(conn).await;
         }
@@ -180,7 +241,7 @@ impl Handler for FrontendHandler {
         conn
     }
 
-    async fn init(&mut self, info: &mut Info) {
+    async fn init(&mut self, #[allow(unused)] info: &mut Info) {
         if self.assets.is_some() {
             if let Some(index) = self.index_file {
                 self.assets = self.assets.map(|h| h.with_index_file(index));
@@ -188,51 +249,52 @@ impl Handler for FrontendHandler {
             return;
         }
 
-        let client = self
-            .client
-            .take()
-            .expect("trillium-frontend: in dev mode, provide a Client via .with_client()")
-            .with_default_pool();
+        #[cfg(feature = "dev-proxy")]
+        {
+            let client = self
+                .client
+                .take()
+                .expect("trillium-frontend: in dev-proxy mode, provide a Client via .with_client()")
+                .with_default_pool();
 
-        let port = self.dev_port.unwrap_or_else(|| {
-            portpicker::pick_unused_port()
-                .expect("trillium-frontend: could not find a free port for the dev server")
-        });
+            let port = self.dev_port.unwrap_or_else(|| {
+                portpicker::pick_unused_port()
+                    .expect("trillium-frontend: could not find a free port for the dev server")
+            });
 
-        // If the user provided an explicit dev command, use it verbatim and let
-        // them handle the port (we still export PORT so they can reference $PORT
-        // in their script if they want). If we auto-detected the command from a
-        // known framework, we know --port is supported and append it ourselves.
-        let dev_command = if let Some(cmd) = self.dev_command.as_deref() {
-            cmd.to_string()
-        } else {
-            let detected = self.detected_dev_command.as_deref().expect(
-                "trillium-frontend: no dev command detected; configure with .with_dev_command()",
-            );
-            format!("{detected} --port {port}")
-        };
+            let dev_command = if let Some(cmd) = self.dev_command.as_deref() {
+                cmd.to_string()
+            } else {
+                let detected = self.detected_dev_command.as_deref().expect(
+                    "trillium-frontend: no dev command detected; configure with .with_dev_command()",
+                );
+                format!("{detected} --port {port}")
+            };
 
-        let child = Command::new("sh")
-            .arg("-c")
-            .arg(&dev_command)
-            .env("PORT", port.to_string())
-            .current_dir(self.project_path.as_ref())
-            .spawn()
-            .expect("trillium-frontend: failed to spawn dev server");
-        self.dev_process = Some(Mutex::new(child));
+            let child = Command::new("sh")
+                .arg("-c")
+                .arg(&dev_command)
+                .env("PORT", port.to_string())
+                .current_dir(self.project_path.as_ref())
+                .spawn()
+                .expect("trillium-frontend: failed to spawn dev server");
+            self.dev_process = Some(Mutex::new(child));
 
-        let upstream = format!("http://localhost:{port}").parse().unwrap();
-        wait_for_port(&upstream, &client).await;
+            let upstream = format!("http://localhost:{port}").parse().unwrap();
+            wait_for_port(&upstream, &client).await;
 
-        let mut proxy = Proxy::new(client, upstream).with_websocket_upgrades();
-        proxy.init(info).await;
-        self.proxy = Some(proxy);
+            let mut proxy = Proxy::new(client, upstream).with_websocket_upgrades();
+            proxy.init(info).await;
+            self.proxy = Some(proxy);
+        }
     }
 
+    #[cfg(feature = "dev-proxy")]
     fn has_upgrade(&self, upgrade: &Upgrade) -> bool {
         self.proxy.as_ref().is_some_and(|p| p.has_upgrade(upgrade))
     }
 
+    #[cfg(feature = "dev-proxy")]
     async fn upgrade(&self, upgrade: Upgrade) {
         if let Some(proxy) = &self.proxy {
             proxy.upgrade(upgrade).await;
@@ -240,6 +302,7 @@ impl Handler for FrontendHandler {
     }
 }
 
+#[cfg(feature = "dev-proxy")]
 impl Drop for FrontendHandler {
     fn drop(&mut self) {
         if let Some(mutex) = self.dev_process.take()
@@ -250,6 +313,7 @@ impl Drop for FrontendHandler {
     }
 }
 
+#[cfg(feature = "dev-proxy")]
 async fn wait_for_port(upstream: &Url, client: &Client) {
     for _ in 0..100 {
         match client.build_conn(Method::Head, upstream.clone()).await {
@@ -282,11 +346,12 @@ pub mod __macro_internals {
 
 /// Build a [`FrontendHandler`] for your frontend project.
 ///
-/// In debug builds: detects your framework and package manager, spawns the dev
-/// server, and proxies all requests to it (including WebSocket HMR).
+/// The mode is determined by the `dev-proxy` cargo feature and whether source
+/// files (`package.json`) exist at the project path:
 ///
-/// In release builds: runs the frontend build at compile time and embeds all
-/// dist files directly in the binary.
+/// - **Dev-proxy** (`dev-proxy` feature + source): spawns dev server, proxies requests
+/// - **Build** (no feature + source): builds frontend at compile time, embeds assets
+/// - **Prebuilt** (no source): embeds pre-built dist assets as-is
 ///
 /// # Usage
 ///
@@ -307,9 +372,6 @@ pub mod __macro_internals {
 macro_rules! frontend {
     ($($tt:tt)*) => {{
         use $crate::__macro_internals::{FrontendHandler, static_compiled};
-        #[cfg(debug_assertions)]
-        { $crate::__macro_internals::frontend_impl!(debug $($tt)*) }
-        #[cfg(not(debug_assertions))]
-        { $crate::__macro_internals::frontend_impl!(release $($tt)*) }
+        $crate::__macro_internals::frontend_impl!($($tt)*)
     }};
 }

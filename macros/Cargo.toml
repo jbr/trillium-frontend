@@ -8,6 +8,9 @@ repository = "https://github.com/jbr/trillium-frontend"
 keywords = ["trillium", "frontend", "proc-macro"]
 categories = ["web-programming::http-server"]
 
+[features]
+dev-proxy = []
+
 [lib]
 proc-macro = true
 

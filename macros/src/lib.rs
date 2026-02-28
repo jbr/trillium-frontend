@@ -7,18 +7,8 @@ use std::path::{Path, PathBuf};
 /// Do not call directly; use `trillium_frontend::frontend!` instead.
 #[proc_macro]
 pub fn frontend_impl(input: TokenStream) -> TokenStream {
-    // First token is `debug` or `release`, injected by the macro_rules! wrapper
-    // via #[cfg(debug_assertions)] so we don't have to rely on CARGO_CFG_* env vars.
-    let mut tokens = input.into_iter().peekable();
-    let is_debug = match tokens.next() {
-        Some(TokenTree::Ident(id)) if id.to_string() == "debug" => true,
-        Some(TokenTree::Ident(id)) if id.to_string() == "release" => false,
-        other => {
-            panic!("trillium-frontend: expected `debug` or `release` as first token, got {other:?}")
-        }
-    };
-    let rest: TokenStream = tokens.collect();
-    let args = parse_args(rest);
+    let is_dev_proxy = cfg!(feature = "dev-proxy");
+    let args = parse_args(input);
 
     let manifest_dir =
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set by cargo");
@@ -27,13 +17,21 @@ pub fn frontend_impl(input: TokenStream) -> TokenStream {
         .to_str()
         .expect("project path is not valid UTF-8");
 
+    let source_exists = project_path.join("package.json").exists();
+
+    if !source_exists {
+        // Prebuilt mode: embed existing dist assets without building
+        return emit_prebuilt(&project_path, project_path_str, &args).into();
+    }
+
     let detection = detect(&project_path);
 
-    let dev_command_tokens = match detection.full_dev_command() {
-        Some(cmd) => quote!(Some(#cmd)),
-        None => quote!(None),
-    };
-    if is_debug {
+    if is_dev_proxy {
+        // Dev-proxy mode: spawn dev server, proxy to it
+        let dev_command_tokens = match detection.full_dev_command() {
+            Some(cmd) => quote!(Some(#cmd)),
+            None => quote!(None),
+        };
         quote! {
             FrontendHandler::new(
                 None,
@@ -43,7 +41,7 @@ pub fn frontend_impl(input: TokenStream) -> TokenStream {
             )
         }
     } else {
-        // Run the frontend build
+        // Build mode: run build command at compile time, embed output
         let detected_build = detection.full_build_command();
         let build_command = args
             .build
@@ -74,7 +72,6 @@ pub fn frontend_impl(input: TokenStream) -> TokenStream {
             .to_str()
             .expect("dist path is not valid UTF-8");
 
-        // Check for a dist/index.html to use as SPA fallback
         let index_html = dist_dir.join("index.html");
         let spa_fallback_tokens = if index_html.exists() {
             let index_str = index_html
@@ -92,11 +89,52 @@ pub fn frontend_impl(input: TokenStream) -> TokenStream {
                 Some(static_compiled!(#dist_str)),
                 #spa_fallback_tokens,
                 #project_path_str,
-                #dev_command_tokens,
+                None,
             )
         }
     }
     .into()
+}
+
+fn emit_prebuilt(
+    project_path: &Path,
+    project_path_str: &str,
+    args: &MacroArgs,
+) -> proc_macro2::TokenStream {
+    let dist_dir = project_path.join(args.dist.as_deref().unwrap_or("dist"));
+
+    if !dist_dir.exists() {
+        panic!(
+            "trillium-frontend: no source (package.json) and no pre-built dist directory found at `{}`. \
+             Either include the dist directory in your published crate or ensure the frontend source is available.",
+            dist_dir.display()
+        );
+    }
+
+    let dist_str = dist_dir
+        .to_str()
+        .expect("dist path is not valid UTF-8");
+
+    let index_html = dist_dir.join("index.html");
+    let spa_fallback_tokens = if index_html.exists() {
+        let index_str = index_html
+            .to_str()
+            .expect("index.html path is not valid UTF-8");
+        quote! {
+            Some(static_compiled!(#index_str))
+        }
+    } else {
+        quote!(None)
+    };
+
+    quote! {
+        FrontendHandler::new(
+            Some(static_compiled!(#dist_str)),
+            #spa_fallback_tokens,
+            #project_path_str,
+            None,
+        )
+    }
 }
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -288,7 +326,6 @@ fn detect_pkg_manager(path: &Path) -> Option<PkgManager> {
 }
 
 fn detect_framework(path: &Path) -> Option<Framework> {
-    // Check exact names and glob-like prefixes
     let vite_configs = ["vite.config.js", "vite.config.ts", "vite.config.mjs"];
     let webpack_configs = [
         "webpack.config.js",

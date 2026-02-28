@@ -8,10 +8,11 @@
 [version-badge]: https://img.shields.io/crates/v/trillium-frontend.svg?style=flat-square
 [crate]: https://crates.io/crates/trillium-frontend
 
-A [Trillium](https://trillium.rs) handler for serving JS frontend projects that works transparently in both development and production:
+A [Trillium](https://trillium.rs) handler for serving JS frontend projects with three operating modes:
 
-- **Debug mode**: auto-detects your framework and package manager, spawns the dev server on a free port, and proxies all requests to it — including WebSocket upgrades for HMR
-- **Release mode**: runs the frontend build at **compile time** and embeds all dist assets directly in the binary via [`trillium-static-compiled`](https://docs.rs/trillium-static-compiled)
+- **Build mode** (default, source available): runs the frontend build at **compile time** and embeds all dist assets directly in the binary via [`trillium-static-compiled`](https://docs.rs/trillium-static-compiled)
+- **Prebuilt mode** (default, no source): embeds pre-built dist assets without attempting to build — this is what happens during `cargo install` from crates.io
+- **Dev-proxy mode** (`dev-proxy` feature + source available): auto-detects your framework and package manager, spawns the dev server on a free port, and proxies all requests to it — including WebSocket upgrades for HMR
 
 ## Usage
 
@@ -34,10 +35,44 @@ fn main() {
 }
 ```
 
-The `frontend!` macro expands differently based on `cfg(debug_assertions)`:
+The same code works in all three modes — `.with_client()` is accepted but ignored when the `dev-proxy` feature is not enabled.
 
-- **Debug**: returns a `FrontendHandler` that will spawn your dev server and proxy to it on `Handler::init`
-- **Release**: runs your build command at compile time and embeds the output as a `FrontendHandler` with static assets
+## Mode selection
+
+The mode is determined by two factors:
+
+1. Whether the `dev-proxy` cargo feature is enabled
+2. Whether `package.json` exists in the frontend project directory (i.e., source is available)
+
+| `dev-proxy` feature | `package.json` exists | Mode |
+|--------------------|-----------------------|------|
+| enabled | yes | Dev-proxy |
+| enabled | no | Prebuilt (fallback) |
+| disabled | yes | Build |
+| disabled | no | Prebuilt |
+
+## Enabling dev-proxy mode
+
+Pass the feature flag when you want live-reloading during development:
+
+```sh
+# Development: live-reloading proxy
+cargo run --features trillium-frontend/dev-proxy
+
+# Production: build and embed assets at compile time
+cargo build --release
+```
+
+You can also define a feature in your own crate that forwards it, for brevity:
+
+```toml
+[features]
+dev-proxy = ["trillium-frontend/dev-proxy"]
+```
+
+```sh
+cargo run --features dev-proxy
+```
 
 ## Macro syntax
 
@@ -61,15 +96,15 @@ frontend!(
 
 ## Auto-detection
 
-In debug mode (and for release builds without explicit `build`/`dist` arguments), `trillium-frontend` inspects the project directory for known config and lock files.
+When source is available (`package.json` exists), `trillium-frontend` inspects the project directory for known config and lock files to determine the build and dev commands.
 
 **Package manager** (detected by lock file, in priority order):
 
 | Lock file | Package manager | Run prefix |
 |-----------|----------------|------------|
 | `bun.lockb` / `bun.lock` | Bun | `bun run` |
-| `pnpm-lock.yaml` | pnpm | `pnpm run` |
-| `yarn.lock` | Yarn | `yarn run` |
+| `pnpm-lock.yaml` | pnpm | `pnpm exec` |
+| `yarn.lock` | Yarn | `yarn exec` |
 | `package-lock.json` | npm | `npx` |
 
 **Framework** (detected by config file):
@@ -88,16 +123,38 @@ The full dev command is assembled as `{run_prefix} {framework_command} --port {p
 
 | Method | Description |
 |--------|-------------|
-| `.with_client(Client)` | **Required in dev mode.** Provide your runtime's HTTP connector for the proxy. |
-| `.with_index_file("index.html")` | Enable SPA fallback: serve this file for any unmatched path. In release mode this also applies to the embedded static handler. |
-| `.with_dev_command("npm run dev -- --port $PORT")` | Override the auto-detected dev command. When set, you are responsible for port handling — `$PORT` is exported as an env var. |
-| `.with_dev_port(3000)` | Pin the dev server to a specific port instead of picking a free one automatically. |
+| `.with_client(Client)` | **Required in dev-proxy mode.** Provide your runtime's HTTP connector for the proxy. Accepted but ignored in other modes. |
+| `.with_index_file("index.html")` | Enable SPA fallback: serve this file for any unmatched path. |
+| `.with_dev_command("npm run dev -- --port $PORT")` | Override the auto-detected dev command. When set, you are responsible for port handling — `$PORT` is exported as an env var. Only used in dev-proxy mode. |
+| `.with_dev_port(3000)` | Pin the dev server to a specific port instead of picking a free one automatically. Only used in dev-proxy mode. |
+
+## Publishing for `cargo install`
+
+To support `cargo install` without requiring JS tooling on the user's machine, include the dist directory in your published crate but **exclude** `package.json`:
+
+```toml
+[package]
+include = [
+    "src/",
+    "client/dist/",   # pre-built assets to embed
+    # Do NOT include client/package.json — its absence triggers prebuilt mode
+]
+```
+
+The absence of `package.json` tells `trillium-frontend` to use the pre-built assets as-is without attempting to run a build command.
+
+Then publish with:
+
+```sh
+cargo build --release  # triggers the frontend build via the proc macro
+cargo publish
+```
 
 ## How it works
 
-### Debug builds
+### Dev-proxy mode (`dev-proxy` feature + source)
 
-1. The proc macro (`trillium-frontend-macros`) detects the framework and package manager at **compile time** and records the dev command in the `FrontendHandler`.
+1. The proc macro detects the framework and package manager at **compile time** and records the dev command in the `FrontendHandler`.
 2. When Trillium calls `Handler::init`, `FrontendHandler`:
    - Picks a free port (or uses `.with_dev_port`)
    - Spawns `sh -c "<dev_command> --port <port>"` in the project directory
@@ -106,12 +163,18 @@ The full dev command is assembled as `{run_prefix} {framework_command} --port {p
 3. All subsequent requests (HTTP and WS) are forwarded to the dev server.
 4. On `Drop`, the dev process is killed.
 
-### Release builds
+### Build mode (no `dev-proxy` feature + source)
 
 1. At **compile time**, the proc macro runs the build command (`sh -c "<build_command>"`) in the project directory.
 2. The compiled `dist/` directory is embedded using `trillium-static-compiled::static_compiled!`.
 3. If `dist/index.html` exists, it is also embedded as a separate SPA fallback handler.
 4. No external process is spawned at runtime.
+
+### Prebuilt mode (no source)
+
+1. At **compile time**, the proc macro finds no `package.json` and skips the build step entirely.
+2. The existing `dist/` directory is embedded using `trillium-static-compiled::static_compiled!`.
+3. Identical runtime behavior to build mode.
 
 ## Safety
 
