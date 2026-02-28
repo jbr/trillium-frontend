@@ -25,6 +25,7 @@ pub fn frontend_impl(input: TokenStream) -> TokenStream {
     }
 
     let detection = detect(&project_path);
+    install_if_needed(&project_path, &detection);
 
     if is_dev_proxy {
         // Dev-proxy mode: spawn dev server, proxy to it
@@ -266,6 +267,15 @@ impl PkgManager {
             PkgManager::Npm => "npx",
         }
     }
+
+    fn install_command(&self) -> &'static str {
+        match self {
+            PkgManager::Bun => "bun install",
+            PkgManager::Pnpm => "pnpm install",
+            PkgManager::Yarn => "yarn install",
+            PkgManager::Npm => "npm install",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -297,6 +307,31 @@ impl Framework {
             Framework::Vite | Framework::Webpack => "dist",
             Framework::Next => ".next",
         }
+    }
+}
+
+fn install_if_needed(project_path: &Path, detection: &Detection) {
+    if project_path.join("node_modules").exists() {
+        return;
+    }
+
+    let install_command = detection
+        .pkg_manager
+        .as_ref()
+        .map(PkgManager::install_command)
+        .unwrap_or("npm install");
+
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(install_command)
+        .current_dir(project_path)
+        .status()
+        .unwrap_or_else(|e| {
+            panic!("trillium-frontend: failed to run `{install_command}`: {e}")
+        });
+
+    if !status.success() {
+        panic!("trillium-frontend: `{install_command}` failed with {status}");
     }
 }
 
