@@ -16,10 +16,6 @@ A [Trillium](https://trillium.rs) handler for serving JS frontend projects with 
 
 ## Usage
 
-```toml
-[dependencies]
-trillium-frontend = "0.1"
-```
 
 ```rust
 use trillium_client::Client;
