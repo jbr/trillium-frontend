@@ -1396,25 +1396,17 @@ dependencies = [
 name = "trillium-frontend"
 version = "0.1.0"
 dependencies = [
+ "env_logger",
  "fieldwork",
  "log",
  "portpicker",
  "trillium",
  "trillium-client",
  "trillium-frontend-macros",
- "trillium-proxy",
- "trillium-static-compiled",
-]
-
-[[package]]
-name = "trillium-frontend-example"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "trillium-client",
- "trillium-frontend",
  "trillium-logger",
+ "trillium-proxy",
  "trillium-smol",
+ "trillium-static-compiled",
 ]
 
 [[package]]
