@@ -22,16 +22,16 @@ dev-proxy = [
 ]
 
 [dependencies]
-trillium = "1.0.0-rc.1"
+trillium = "1.3.0"
 trillium-frontend-macros = { path = "macros", version = "0.3.0-rc.1" }
-fieldwork = "0.4"
+fieldwork = "0.5"
 log = "0.4"
-trillium-static-compiled = "0.6.0-rc.1"
-trillium-client = "0.7.0-rc.1"
-trillium-proxy = { version = "0.6.0-rc.1", optional = true }
+trillium-static-compiled = "0.7.0"
+trillium-client = "0.9.7"
+trillium-proxy = { version = "0.8.1", optional = true }
 portpicker = { version = "0.1", optional = true }
 
 [dev-dependencies]
 env_logger = "0.11"
-trillium-smol = "0.5.0-rc.1"
-trillium-logger = "0.5.0-rc.1"
+trillium-smol = "0.7.0"
+trillium-logger = "0.5.4"
